@@ -1,0 +1,39 @@
+<!-- templates/login.html -->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Login</title>
+  </head>
+  <body>
+    <h1>Login</h1>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, msg in messages %}
+          <div><strong>{{ category.title() }}:</strong> {{ msg }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <form method="post">
+      {{ form.hidden_tag() }}
+
+      <div>
+        {{ form.email.label }}<br>
+        {{ form.email(size=32) }}
+        {% for e in form.email.errors %}<div style="color:red">{{ e }}</div>{% endfor %}
+      </div>
+
+      <div style="margin-top:8px">
+        {{ form.password.label }}<br>
+        {{ form.password(size=32) }}
+        {% for e in form.password.errors %}<div style="color:red">{{ e }}</div>{% endfor %}
+      </div>
+
+      <button type="submit" style="margin-top:12px">Log in</button>
+    </form>
+
+    <p style="margin-top:12px"><a href="{{ url_for('register') }}">Create an account</a></p>
+  </body>
+</html>
