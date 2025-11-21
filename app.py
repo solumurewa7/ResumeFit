@@ -14,13 +14,19 @@ from flask_login import (
     LoginManager, UserMixin, login_user, logout_user,
     login_required, current_user
 )
+import uuid
+from werkzeug.utils import secure_filename
+from flask_wtf.file import FileField, FileAllowed, FileRequired
+import pdfplumber
+import docx
+from flask import send_from_directory, abort
+
 
 # -------------------- App + Config --------------------
 load_dotenv()
 
 app = Flask(__name__)
 os.makedirs(app.instance_path, exist_ok=True)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(app.instance_path, 'app.db')
 
 
 
@@ -42,10 +48,13 @@ app.config.update(
 )
 mail = Mail(app)
 
+
 # Database
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///app.db')
+db_path = os.getenv('DATABASE_URL') or ('sqlite:///' + os.path.join(app.instance_path, 'app.db'))
+app.config['SQLALCHEMY_DATABASE_URI'] = db_path
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
+
 
 # Token serializer for email verification
 ts = URLSafeTimedSerializer(app.config['SECRET_KEY'])
@@ -54,6 +63,19 @@ ts = URLSafeTimedSerializer(app.config['SECRET_KEY'])
 login_manager = LoginManager()
 login_manager.init_app(app)
 login_manager.login_view = 'login'  # where to send users who need to log in
+
+
+
+ALLOWED_EXTS = {'pdf', 'docx'}
+
+app.config['UPLOAD_FOLDER'] = os.path.join(app.instance_path, 'uploads')
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+
+# 5 MB upload limit (optional; can also come from .env)
+app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 5*1024*1024))
+
+
+
 
 # -------------------- Models --------------------
 class User(db.Model, UserMixin):
@@ -80,6 +102,29 @@ class User(db.Model, UserMixin):
         except Exception:
             return None
 
+
+
+
+
+
+
+class Resume(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+    original_filename = db.Column(db.String(255), nullable=False)
+    stored_path = db.Column(db.String(512), nullable=False)
+    resume_text = db.Column(db.Text, nullable=False)
+    uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+
+
+
+
+
+
+
+
+
 @login_manager.user_loader
 def load_user(user_id: str):
     return User.query.get(int(user_id))
@@ -95,6 +140,44 @@ class RegistrationForm(FlaskForm):
 class LoginForm(FlaskForm):
     email = StringField('Email', validators=[DataRequired(), Email()])
     password = PasswordField('Password', validators=[DataRequired()])
+
+
+
+class ResumeForm(FlaskForm):
+    file = FileField(
+        'Upload resume (PDF/DOCX)',
+        validators=[FileRequired(), FileAllowed(['pdf','docx'], 'PDF or DOCX only')]
+    )
+
+
+
+# -------------------- Extractors --------------------
+
+def _extract_pdf_text(path):
+    parts = []
+    with pdfplumber.open(path) as pdf:
+        for page in pdf.pages:
+            parts.append(page.extract_text() or "")
+    return "\n".join(parts).strip()
+
+def _extract_docx_text(path):
+    d = docx.Document(path)
+    return "\n".join(p.text for p in d.paragraphs).strip()
+
+def extract_text(path, ext):
+    ext = ext.lower()
+    if ext == 'pdf':
+        return _extract_pdf_text(path)
+    if ext == 'docx':
+        return _extract_docx_text(path)
+    raise ValueError("Unsupported file type")
+
+
+
+
+
+
+
 
 # -------------------- Routes --------------------
 @app.route('/')
@@ -191,7 +274,15 @@ def logout():
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    return f"Hello, {current_user.username}! (protected page)"
+    latest = Resume.query.filter_by(user_id=current_user.id)\
+                         .order_by(Resume.uploaded_at.desc()).first()
+    return render_template('dashboard.html', latest=latest)
+
+
+
+
+
+
 
 # ---- Dev helpers ----
 @app.route('/dev/test-mail')
@@ -203,10 +294,102 @@ def dev_test_mail():
     except Exception as e:
         return f'Failed to send: {e}', 500
 
+
+
+
+
+
 @app.route('/dev/users')
 def dev_users():
     rows = User.query.all()
     return "<br>".join([f"{u.id} | {u.email} | verified={u.is_verified}" for u in rows])
+
+
+
+
+
+
+def _allowed(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTS
+
+
+
+
+@app.route('/resume', methods=['GET','POST'])
+@login_required
+def resume():
+    if not current_user.is_verified:
+        flash('Please verify your email first.', 'warning')
+        return redirect(url_for('dashboard'))
+
+    form = ResumeForm()
+    latest = Resume.query.filter_by(user_id=current_user.id).order_by(Resume.uploaded_at.desc()).first()
+
+    if form.validate_on_submit():
+        f = form.file.data
+        if not _allowed(f.filename):
+            flash('Only PDF or DOCX allowed.', 'danger')
+            return render_template('resume.html', form=form, latest=latest)
+
+        ext = f.filename.rsplit('.', 1)[1].lower()
+        safe = secure_filename(f.filename)
+        dest_name = f"{uuid.uuid4().hex}_{safe}"
+        dest_path = os.path.join(app.config['UPLOAD_FOLDER'], dest_name)
+        f.save(dest_path)
+
+        try:
+            text = extract_text(dest_path, ext)
+            if not text.strip():
+                raise ValueError("Empty text extracted")
+        except Exception as e:
+            os.remove(dest_path)
+            flash(f'Could not read file: {e}', 'danger')
+            return render_template('resume.html', form=form, latest=latest)
+
+        rec = Resume(
+            user_id=current_user.id,
+            original_filename=safe,
+            stored_path=dest_path,
+            resume_text=text
+        )
+        db.session.add(rec)
+        db.session.commit()
+        flash('Resume uploaded and parsed successfully!', 'success')
+        return redirect(url_for('resume'))
+
+    return render_template('resume.html', form=form, latest=latest)
+
+
+
+
+
+
+@app.route('/resume/view/<int:resume_id>')
+@login_required
+def resume_view(resume_id):
+    rec = Resume.query.get_or_404(resume_id)
+    if rec.user_id != current_user.id:
+        abort(403)
+    # serve the stored file
+    return send_from_directory(
+        app.config['UPLOAD_FOLDER'],
+        os.path.basename(rec.stored_path),
+        as_attachment=False # browser will preview PDFs, download DOCX
+    )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 with app.app_context():
     db.create_all()
