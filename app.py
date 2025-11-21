@@ -20,6 +20,8 @@ from flask_wtf.file import FileField, FileAllowed, FileRequired
 import pdfplumber
 import docx
 from flask import send_from_directory, abort
+from wtforms import StringField, PasswordField, BooleanField, TextAreaField
+import re
 
 
 # -------------------- App + Config --------------------
@@ -117,6 +119,13 @@ class Resume(db.Model):
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+class AnalyzeForm(FlaskForm):
+    job_title = StringField('Job title (optional)')
+    company = StringField('Company (optional)')
+    jd_text = TextAreaField('Paste job description here', validators=[DataRequired()])
+
+
+
 
 
 
@@ -171,6 +180,68 @@ def extract_text(path, ext):
     if ext == 'docx':
         return _extract_docx_text(path)
     raise ValueError("Unsupported file type")
+
+
+
+
+
+
+
+
+# ---------- Skills catalog & helpers ----------
+TECH_SKILLS = [
+    'python','java','c++','c','javascript','typescript','react','node',
+    'html','css','sql','mysql','postgres','mongodb','linux','git',
+    'aws','azure','gcp','docker','kubernetes','rest','api',
+    'pandas','numpy','matplotlib','scikit-learn','tensorflow','pytorch',
+    'oop','object oriented programming','data structures','algorithms'
+]
+SOFT_SKILLS = [
+    'communication','teamwork','leadership','problem solving',
+    'time management','adaptability','collaboration','initiative'
+]
+
+# simple synonyms -> canonical
+SYNONYMS = {
+    'js': 'javascript',
+    'ts': 'typescript',
+    'ml': 'machine learning',
+    'object-oriented programming': 'object oriented programming',
+    'sql server': 'sql',
+}
+
+def _normalize(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9+\s]', ' ', text)  # keep + for C++
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def _canon(word: str) -> str:
+    return SYNONYMS.get(word, word)
+
+def extract_skill_hits(text: str):
+    """Return a set of canonical skills found in text."""
+    t = _normalize(text)
+    words = set(t.split())
+
+    hits = set()
+    # single-token hits
+    for s in TECH_SKILLS + SOFT_SKILLS:
+        s_norm = _normalize(s)
+        if ' ' not in s_norm:
+            if _canon(s_norm) in words:
+                hits.add(_canon(s_norm))
+
+    # multi-token phrases
+    phrases = [s for s in TECH_SKILLS + SOFT_SKILLS if ' ' in s]
+    for p in phrases:
+        p_norm = _normalize(p)
+        if p_norm in t:
+            hits.add(_canon(p_norm))
+
+    return hits
+ 
+
 
 
 
@@ -379,6 +450,52 @@ def resume_view(resume_id):
 
 
 
+
+
+@app.route('/analyze', methods=['GET', 'POST'])
+@login_required
+def analyze():
+    if not current_user.is_verified:
+        flash('Please verify your email first.', 'warning')
+        return redirect(url_for('dashboard'))
+
+    # need a resume on file
+    latest = Resume.query.filter_by(user_id=current_user.id)\
+                         .order_by(Resume.uploaded_at.desc()).first()
+    if not latest:
+        flash('Upload a resume first.', 'warning')
+        return redirect(url_for('resume'))
+
+    form = AnalyzeForm()
+    if form.validate_on_submit():
+        jd = form.jd_text.data
+        jd_hits = extract_skill_hits(jd)
+        resume_hits = extract_skill_hits(latest.resume_text)
+
+        all_required = sorted(jd_hits)            # treat JD skills as "requirements"
+        matched = sorted(jd_hits & resume_hits)
+        missing = sorted(jd_hits - resume_hits)
+
+        total = len(all_required)
+        fit_pct = int(round((len(matched) / total) * 100)) if total else 0
+
+        if   fit_pct >= 70: label = 'Strong'
+        elif fit_pct >= 40: label = 'Medium'
+        else:               label = 'Low'
+
+        return render_template(
+            'analyze_result.html',
+            job_title=form.job_title.data or '',
+            company=form.company.data or '',
+            fit_pct=fit_pct,
+            label=label,
+            matched=matched,
+            missing=missing,
+            required=all_required,
+            resume_id=latest.id,
+        )
+
+    return render_template('analyze.html', form=form, latest=latest)
 
 
 
