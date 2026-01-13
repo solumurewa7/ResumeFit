@@ -1,0 +1,75 @@
+:root{
+  --rf-bg: #070B1A;
+  --rf-panel: rgba(255,255,255,0.06);
+  --rf-border: rgba(255,255,255,0.12);
+  --rf-text: rgba(255,255,255,0.92);
+  --rf-muted: rgba(255,255,255,0.65);
+
+  --rf-cyan: #27E5FF;
+  --rf-cyan2: #12B6FF;
+}
+
+.rf-body{
+  background: radial-gradient(1200px 600px at 20% 10%, rgba(39,229,255,0.14), transparent 60%),
+              radial-gradient(900px 500px at 80% 20%, rgba(18,182,255,0.10), transparent 55%),
+              var(--rf-bg);
+  color: var(--rf-text);
+  min-height: 100vh;
+}
+
+.rf-nav{
+  background: rgba(7,11,26,0.65);
+  border-bottom: 1px solid var(--rf-border);
+  backdrop-filter: blur(10px);
+}
+
+.rf-logo-badge{
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(39,229,255,0.12);
+  border: 1px solid rgba(39,229,255,0.35);
+  box-shadow: 0 0 0 6px rgba(39,229,255,0.07);
+}
+
+.rf-brand-text{
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.rf-card{
+  background: var(--rf-panel);
+  border: 1px solid var(--rf-border);
+  border-radius: 16px;
+}
+
+.rf-btn{
+  background: linear-gradient(90deg, var(--rf-cyan), var(--rf-cyan2));
+  border: none;
+  color: #001018;
+  font-weight: 700;
+}
+
+.rf-btn:hover{
+  filter: brightness(1.05);
+}
+
+.rf-btn-outline{
+  border: 1px solid rgba(39,229,255,0.45);
+  color: var(--rf-text);
+  background: rgba(39,229,255,0.08);
+}
+
+.rf-btn-outline:hover{
+  background: rgba(39,229,255,0.14);
+}
+
+.rf-muted{ color: var(--rf-muted); }
+
+.rf-alert{
+  border: 1px solid var(--rf-border);
+  background: rgba(255,255,255,0.06);
+  color: var(--rf-text);
+}
