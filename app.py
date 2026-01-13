@@ -1,7 +1,6 @@
 from flask import Flask, render_template, redirect, url_for, flash
 from flask_mail import Mail, Message
 from flask_wtf import FlaskForm
-from wtforms import StringField, PasswordField, BooleanField
 from wtforms.validators import DataRequired, Email, EqualTo
 from dotenv import load_dotenv
 import os
@@ -22,6 +21,14 @@ import docx
 from flask import send_from_directory, abort
 from wtforms import StringField, PasswordField, BooleanField, TextAreaField
 import re
+from wtforms import TextAreaField
+from rapidfuzz import fuzz
+import string
+import json
+
+
+
+
 
 
 # -------------------- App + Config --------------------
@@ -119,10 +126,21 @@ class Resume(db.Model):
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
-class AnalyzeForm(FlaskForm):
-    job_title = StringField('Job title (optional)')
-    company = StringField('Company (optional)')
-    jd_text = TextAreaField('Paste job description here', validators=[DataRequired()])
+
+class Analysis(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, index=True)
+
+    job_title = db.Column(db.String(255), nullable=True)
+    company = db.Column(db.String(255), nullable=True)
+
+    fit_percentage = db.Column(db.Float, nullable=False)
+    fit_label = db.Column(db.String(20), nullable=False)
+
+    matched_skills = db.Column(db.Text, nullable=False)  # JSON string list
+    missing_skills = db.Column(db.Text, nullable=False)  # JSON string list
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, index=True)
 
 
 
@@ -157,6 +175,11 @@ class ResumeForm(FlaskForm):
         'Upload resume (PDF/DOCX)',
         validators=[FileRequired(), FileAllowed(['pdf','docx'], 'PDF or DOCX only')]
     )
+
+class AnalyzeForm(FlaskForm):
+    job_title = StringField('Job Title')
+    company = StringField('Company')
+    jd_text = TextAreaField('Job Description', validators=[DataRequired()])
 
 
 
@@ -194,8 +217,9 @@ TECH_SKILLS = [
     'html','css','sql','mysql','postgres','mongodb','linux','git',
     'aws','azure','gcp','docker','kubernetes','rest','api',
     'pandas','numpy','matplotlib','scikit-learn','tensorflow','pytorch',
-    'oop','object oriented programming','data structures','algorithms'
-]
+    'oop','object oriented programming','data structures','algorithms','machine learning','deep learning',
+    'cloud computing','cybersecurity','devops','agile methodologies','scrum','ci/cd','microservices','graphql','bash','shell scripting','jira','linux administration'
+    ]
 SOFT_SKILLS = [
     'communication','teamwork','leadership','problem solving',
     'time management','adaptability','collaboration','initiative'
@@ -216,13 +240,32 @@ def _normalize(text: str) -> str:
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
+def _apply_synonyms_to_normalized_text(t: str) -> str:
+    """
+    t must already be normalized (lowercase, punctuation stripped).
+    Applies phrase synonyms first, then single-token synonyms.
+    """
+    # phrase replacements (keys with spaces)
+    for k, v in SYNONYMS.items():
+        k_norm = _normalize(k)
+        v_norm = _normalize(v)
+        if ' ' in k_norm and k_norm in t:
+            t = re.sub(rf'\b{re.escape(k_norm)}\b', v_norm, t)
+
+    # token replacements
+    tokens = [SYNONYMS.get(tok, tok) for tok in t.split()]
+    return " ".join(tokens)
+
+
 def _canon(word: str) -> str:
     return SYNONYMS.get(word, word)
 
 def extract_skill_hits(text: str):
     """Return a set of canonical skills found in text."""
     t = _normalize(text)
+    t = _apply_synonyms_to_normalized_text(t)
     words = set(t.split())
+
 
     hits = set()
     # single-token hits
@@ -240,6 +283,14 @@ def extract_skill_hits(text: str):
             hits.add(_canon(p_norm))
 
     return hits
+
+ALL_SKILLS = TECH_SKILLS + SOFT_SKILLS
+
+def _present(skill: str, text: str, threshold: int = 80) -> bool:
+    """Check if a skill is present in text using fuzzy matching."""
+    skill_norm = _normalize(skill)
+    text_norm = _normalize(text)
+    return fuzz.partial_ratio(skill_norm, text_norm) >= threshold
  
 
 
@@ -347,7 +398,12 @@ def logout():
 def dashboard():
     latest = Resume.query.filter_by(user_id=current_user.id)\
                          .order_by(Resume.uploaded_at.desc()).first()
-    return render_template('dashboard.html', latest=latest)
+
+    recent = Analysis.query.filter_by(user_id=current_user.id)\
+                           .order_by(Analysis.created_at.desc()).limit(10).all()
+
+    return render_template('dashboard.html', latest=latest, recent=recent)
+
 
 
 
@@ -455,55 +511,98 @@ def resume_view(resume_id):
 @app.route('/analyze', methods=['GET', 'POST'])
 @login_required
 def analyze():
-    if not current_user.is_verified:
-        flash('Please verify your email first.', 'warning')
-        return redirect(url_for('dashboard'))
+    form = AnalyzeForm()
 
-    # need a resume on file
     latest = Resume.query.filter_by(user_id=current_user.id)\
                          .order_by(Resume.uploaded_at.desc()).first()
+
     if not latest:
-        flash('Upload a resume first.', 'warning')
+        flash("Upload a resume before analyzing a job.", "warning")
         return redirect(url_for('resume'))
 
-    form = AnalyzeForm()
+    resume_text = latest.resume_text or ""
+
     if form.validate_on_submit():
-        jd = form.jd_text.data
-        jd_hits = extract_skill_hits(jd)
-        resume_hits = extract_skill_hits(latest.resume_text)
+        jd_text = form.jd_text.data or ""
+        job_title = (form.job_title.data or "").strip() or None
+        company = (form.company.data or "").strip() or None
 
-        all_required = sorted(jd_hits)            # treat JD skills as "requirements"
-        matched = sorted(jd_hits & resume_hits)
-        missing = sorted(jd_hits - resume_hits)
+        jd_skills = extract_skill_hits(jd_text)
+        res_skills = extract_skill_hits(resume_text)
 
-        total = len(all_required)
-        fit_pct = int(round((len(matched) / total) * 100)) if total else 0
+        matched_set = jd_skills & res_skills
+        missing_set = jd_skills - res_skills
 
-        if   fit_pct >= 70: label = 'Strong'
-        elif fit_pct >= 40: label = 'Medium'
-        else:               label = 'Low'
+        matched = sorted(matched_set)
+        missing = sorted(missing_set)
 
-        return render_template(
-            'analyze_result.html',
-            job_title=form.job_title.data or '',
-            company=form.company.data or '',
-            fit_pct=fit_pct,
-            label=label,
-            matched=matched,
-            missing=missing,
-            required=all_required,
-            resume_id=latest.id,
+        total = len(jd_skills)
+        if total == 0:
+            flash("No recognizable skills found in the job description.", "warning")
+            return redirect(url_for('analyze'))
+
+        fit_pct = round(len(matched_set) / total * 100, 1)
+        if fit_pct >= 70:
+            fit_label = "Strong"
+        elif fit_pct >= 40:
+            fit_label = "Medium"
+        else:
+            fit_label = "Low"
+
+        rec = Analysis(
+            user_id=current_user.id,
+            job_title=job_title,
+            company=company,
+            fit_percentage=fit_pct,
+            fit_label=fit_label,
+            matched_skills=json.dumps(matched),
+            missing_skills=json.dumps(missing),
         )
+        db.session.add(rec)
+        db.session.commit()
 
-    return render_template('analyze.html', form=form, latest=latest)
+        # keep last 10 analyses per user
+        keep_n = 10
+        old = Analysis.query.filter_by(user_id=current_user.id)\
+                            .order_by(Analysis.created_at.desc())\
+                            .offset(keep_n).all()
+        for row in old:
+            db.session.delete(row)
+        db.session.commit()
+
+        return redirect(url_for('analysis_detail', analysis_id=rec.id))
+
+    return render_template('analyze.html', form=form, resume_present=True)
 
 
 
 
+@app.route('/analysis/<int:analysis_id>')
+@login_required
+def analysis_detail(analysis_id):
+    rec = Analysis.query.get_or_404(analysis_id)
+    if rec.user_id != current_user.id:
+        abort(403)
 
+    matched = json.loads(rec.matched_skills) if rec.matched_skills else []
+    missing = json.loads(rec.missing_skills) if rec.missing_skills else []
+    required = sorted(set(matched) | set(missing))
 
+    latest_resume = Resume.query.filter_by(user_id=current_user.id)\
+                                .order_by(Resume.uploaded_at.desc()).first()
+    resume_id = latest_resume.id if latest_resume else None
 
-
+    return render_template(
+        'analyze_result.html',
+        job_title=rec.job_title,
+        company=rec.company,
+        fit_pct=rec.fit_percentage,
+        fit_label=rec.fit_label,
+        matched=matched,
+        missing=missing,
+        required=required,
+        resume_id=resume_id
+    )
 
 
 

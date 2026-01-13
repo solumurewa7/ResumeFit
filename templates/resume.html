@@ -43,6 +43,19 @@
   </div>
 {% endif %}
 
+{% if latest %}
+  <div class="card bg-black border-secondary mt-4">
+    <div class="card-body">
+      <h5 class="card-title">Extracted text preview</h5>
+      <p class="text-muted mb-3">
+        This is the text ResumeFit will use for matching.
+      </p>
+      <pre class="text-light mb-0" style="white-space: pre-wrap;">{{ latest.resume_text }}</pre>
+    </div>
+  </div>
+{% endif %}
+
+
 
 </div>
 </body>

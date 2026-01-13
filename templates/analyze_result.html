@@ -17,9 +17,9 @@
 
   <div class="display-5 fw-bold">
     Fit: {{ fit_pct }}%
-    {% if label == 'Strong' %}
+    {% if fit_label == 'Strong' %}
       <span class="badge bg-success ms-3">Strong</span>
-    {% elif label == 'Medium' %}
+    {% elif fit_label == 'Medium' %}
       <span class="badge bg-warning text-dark ms-3">Medium</span>
     {% else %}
       <span class="badge bg-danger ms-3">Low</span>
@@ -52,8 +52,12 @@
   <div class="mt-4">
     <a class="btn btn-outline-light btn-sm" href="{{ url_for('analyze') }}">Analyze another</a>
     <a class="btn btn-secondary btn-sm ms-2" href="{{ url_for('dashboard') }}">Back to Dashboard</a>
-    <a class="btn btn-outline-light btn-sm ms-2" href="{{ url_for('resume_view', resume_id=resume_id) }}" target="_blank">
-      View original resume
+    {% if resume_id %}
+      <a class="btn btn-outline-light btn-sm ms-2"
+        href="{{ url_for('resume_view', resume_id=resume_id) }}" target="_blank">
+        View original resume
+      </a>
+    {% endif %}
     </a>
   </div>
 

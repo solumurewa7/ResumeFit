@@ -8,13 +8,12 @@
   <body>
     <h1>Login</h1>
 
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        {% for category, msg in messages %}
-          <div><strong>{{ category.title() }}:</strong> {{ msg }}</div>
-        {% endfor %}
-      {% endif %}
+    {% with msgs = get_flashed_messages(with_categories=true) %}
+      {% for cat, msg in msgs %}
+        <div class="alert alert-{{cat}}">{{ msg }}</div>
+      {% endfor %}
     {% endwith %}
+
 
     <form method="post">
       {{ form.hidden_tag() }}
